@@ -159,11 +159,18 @@ export function decorateMain(main) {
  * Loads everything needed to get to LCP.
  * @param {Element} doc The container element
  */
+/** A page whose main holds an `ad` block renders the banner alone (no header, footer, consent). */
+const isAdPage = () => !!document.querySelector('main .ad');
+
 async function loadEager(doc) {
   document.documentElement.lang = 'en';
   decorateTemplateAndTheme();
   const main = doc.querySelector('main');
   if (main) {
+    if (isAdPage()) {
+      document.body.classList.add('ad-page');
+      loadFonts(); // before the ad measures readiness
+    }
     decorateMain(main);
     document.body.classList.add('appear');
     await loadSection(main.querySelector('.section'), waitForFirstImage);
@@ -184,6 +191,10 @@ async function loadEager(doc) {
  * @param {Element} doc The container element
  */
 async function loadLazy(doc) {
+  if (document.body.classList.contains('ad-page')) {
+    await loadSections(doc.querySelector('main'));
+    return;
+  }
   loadHeader(doc.querySelector('body > header'));
 
   const main = doc.querySelector('main');
@@ -204,6 +215,7 @@ async function loadLazy(doc) {
  * without impacting the user experience.
  */
 function loadDelayed() {
+  if (document.body.classList.contains('ad-page')) return;
   import('./consent-check.js');
   // load anything that can be postponed to the latest here
 }

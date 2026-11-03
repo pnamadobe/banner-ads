@@ -1,0 +1,114 @@
+/* ad block: absolutely positioned layers on a fixed-size stage */
+body.ad-page header,
+body.ad-page footer {
+  display: none;
+}
+
+body.ad-page main > .section {
+  padding: 24px;
+}
+
+body.ad-export {
+  margin: 0;
+  background: transparent;
+}
+
+body.ad-export main > .section {
+  padding: 0;
+}
+
+.ad {
+  display: inline-block;
+}
+
+.ad .ad-click {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.ad .ad-stage {
+  position: relative;
+  overflow: hidden;
+  background: #fff;
+  font-family: sans-serif;
+  color: #000;
+  line-height: 1.2;
+  contain: layout paint;
+}
+
+.ad .ad-stage.is-loading,
+.ad .ad-stage.is-loading * {
+  animation-play-state: paused !important;
+}
+
+.ad .ad-layer {
+  position: absolute;
+  box-sizing: border-box;
+  margin: 0;
+}
+
+.ad .ad-image {
+  overflow: hidden;
+}
+
+.ad .ad-image img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ad .ad-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  white-space: pre-line;
+  overflow-wrap: break-word;
+}
+
+.ad .ad-text[data-valign="middle"] {
+  justify-content: center;
+}
+
+.ad .ad-text[data-valign="bottom"] {
+  justify-content: flex-end;
+}
+
+.ad .ad-text.ad-button {
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.ad .ad-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 12px;
+  font-size: 14px;
+}
+
+.ad .ad-controls button {
+  font: inherit;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.ad .ad-controls a[aria-current] {
+  font-weight: 700;
+}
+
+.ad .ad-error {
+  font-family: monospace;
+  font-size: 14px;
+  color: #b00020;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ad .ad-stage,
+  .ad .ad-stage * {
+    animation: none !important;
+  }
+}

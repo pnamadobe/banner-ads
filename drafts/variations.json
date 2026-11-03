@@ -1,0 +1,8 @@
+{
+  "total": 2, "offset": 0, "limit": 2,
+  "data": [
+    { "outputFileName": "Spring", "headline": "Fresh deals\nfor spring", "subhead": "Up to 30% off outdoor gear", "cta": "Shop now", "hero": "/drafts/hero-spring.svg", "clickthrough": "https://example.com/spring" },
+    { "outputFileName": "Fall", "headline": "Cozy up\nthis fall", "subhead": "New layers, free shipping", "cta": "Explore", "hero": "/drafts/hero-fall.svg", "clickthrough": "https://example.com/fall" }
+  ],
+  ":type": "sheet"
+}
