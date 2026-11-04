@@ -115,23 +115,39 @@ export const mimeOf = (name) => EXT[String(name).split('.').pop().toLowerCase()]
 
 const slug = (s) => String(s || 'img').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'img';
 
-/** images: [{ src, label, box }] -> [{ src, rel, label, box }] (one entry per unique src) */
+/** An Edge Delivery media bus image (media_<hash>.png), which the EDS optimizer can resize and re-encode. */
+export function isEdsMedia(src) {
+  try {
+    return /\/media_[0-9a-f]+\.(png|jpe?g|gif|webp)$/i.test(new URL(src).pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * images: [{ src, label, box, back }] -> [{ src, rel, label, box, jpg }] (one entry per unique src).
+ * back marks the back-most layer: nothing is under it, so an EDS slice there can ship as JPEG.
+ */
 export function planAssets(images) {
   const seen = new Map();
   const used = new Set();
-  images.forEach(({ src, label, box }) => {
+  images.forEach(({
+    src, label, box, back,
+  }) => {
     if (!src || seen.has(src)) return;
     let ext = 'png';
     try {
       const m = /\.([a-z0-9]{2,5})$/i.exec(new URL(src).pathname);
       if (m && EXT[m[1].toLowerCase()]) ext = m[1].toLowerCase() === 'jpeg' ? 'jpg' : m[1].toLowerCase();
     } catch { /* relative or bad url: keep png */ }
+    const jpg = Boolean(back) && isEdsMedia(src);
+    if (jpg) ext = 'jpg';
     const base = slug(label);
     let rel = `assets/${base}.${ext}`;
     for (let n = 2; used.has(rel); n += 1) rel = `assets/${base}-${n}.${ext}`;
     used.add(rel);
     seen.set(src, {
-      src, rel, label, box,
+      src, rel, label, box, jpg,
     });
   });
   return [...seen.values()];
@@ -146,13 +162,25 @@ export const BUDGET_STEPS = [
   { scale: 1, quality: 55 },
 ];
 
-/** Dynamic Media delivery URL at a budget step; other URLs are fetched as is. */
-export function atStep(src, box, step) {
+/**
+ * Image URL at a budget step. Dynamic Media takes width + quality. EDS media takes width and
+ * a format: progressive JPEG when jpg (the opaque back slice), else PNG to keep alpha. EDS has
+ * no quality knob, so only the scale steps shrink it. Other URLs are fetched as is.
+ */
+export function atStep(src, box, step, { jpg = false } = {}) {
   try {
     const u = new URL(src);
-    if (!u.pathname.includes('/adobe/assets/')) return src;
-    u.searchParams.set('width', String(Math.max(1, Math.ceil((box && box.w ? box.w : 1) * step.scale))));
-    u.searchParams.set('quality', String(step.quality));
+    const width = String(Math.max(1, Math.ceil((box && box.w ? box.w : 1) * step.scale)));
+    if (u.pathname.includes('/adobe/assets/')) {
+      u.searchParams.set('width', width);
+      u.searchParams.set('quality', String(step.quality));
+      return u.href;
+    }
+    if (!isEdsMedia(src)) return src;
+    u.search = '';
+    u.searchParams.set('width', width);
+    u.searchParams.set('format', jpg ? 'pjpg' : 'png');
+    u.searchParams.set('optimize', 'medium');
     return u.href;
   } catch {
     return src;

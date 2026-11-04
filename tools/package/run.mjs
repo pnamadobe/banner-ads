@@ -107,6 +107,8 @@ async function readExport(browser, url) {
             src: img.getAttribute('src'),
             label: img.closest('[data-label]')?.dataset.label || 'img',
             box: { w: parseFloat(layer?.style.width) || img.naturalWidth || 1 },
+            // back-most layer: nothing under it, so it can ship without alpha
+            back: Boolean(layer) && layer === block.querySelector('.ad-layer'),
           };
         }),
       };
@@ -183,7 +185,7 @@ async function packageAd(browser, tool, wb, origin, ad) {
 
   const build = async (step) => {
     const files = new Map();
-    const bufs = await Promise.all(assets.map((a) => fetchBuf(atStep(a.src, a.box, step))));
+    const bufs = await Promise.all(assets.map((a) => fetchBuf(atStep(a.src, a.box, step, { jpg: a.jpg }))));
     assets.forEach((a, i) => files.set(a.rel, bufs[i]));
     files.set('index.html', Buffer.from(assembleIndex({
       blockHtml: rewriteAssets(info.blockHtml, assets), css, width, height, clickTag: info.clickTag, title: ad.name,

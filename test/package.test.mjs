@@ -145,6 +145,18 @@ test('planAssets names one file per unique src; atStep and rewriteAssets', () =>
   assert.equal(u.searchParams.get('width'), '450');
   assert.equal(u.searchParams.get('quality'), '55');
   assert.equal(atStep('https://x.example/a.png', { w: 1 }, BUDGET_STEPS[0]), 'https://x.example/a.png');
+  const m = 'https://main--a--b.aem.page/ads/x/media_13ae1f35.png?width=750&format=png&optimize=medium';
+  const up = new URL(atStep(m, { w: 1080 }, { scale: 1.5, quality: 55 }));
+  assert.equal(up.searchParams.get('width'), '1620');
+  assert.equal(up.searchParams.get('format'), 'png');
+  assert.equal(up.searchParams.get('optimize'), 'medium');
+  assert.equal(new URL(atStep(m, { w: 1080 }, BUDGET_STEPS[4], { jpg: true })).searchParams.get('format'), 'pjpg');
+  const slices = planAssets([
+    { src: m, label: 'static-0', box: { w: 1080 }, back: true },
+    { src: m.replace('13ae', '14ae'), label: 'static-1', box: { w: 1080 } },
+    { src: 'https://x.example/bg.png', label: 'bg', box: { w: 1 }, back: true },
+  ]);
+  assert.deepEqual(slices.map((a) => [a.rel, a.jpg]), [['assets/static-0.jpg', true], ['assets/static-1.png', false], ['assets/bg.png', false]]);
   const html = `<img src="${escAttr(d)}"><img src="https://x.example/static-0.png">`;
   assert.equal(rewriteAssets(html, plan), '<img src="assets/hero-shot.jpg"><img src="assets/static-0.png">');
   assert.equal(mimeOf('a/b.JPG'), 'image/jpeg');

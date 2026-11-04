@@ -74,6 +74,8 @@ const STYLE_RULES = [
   [/^valign:(top|middle|center|bottom)$/i, ([, v], css, flags) => { flags.valign = v.toLowerCase(); }],
   [/^focus:(\d*\.?\d+),(\d*\.?\d+)$/i, ([, x, y], css) => { css.objectPosition = `${x}% ${y}%`; }],
   [/^fit:(cover|contain|fill)$/i, ([, fit], css) => { css.objectFit = fit.toLowerCase(); }],
+  // the CSS `rotate` property, not `transform`: it composes with the motion keyframes
+  [/^rotate:(-?\d*\.?\d+)(?:deg)?$/i, ([, n], css) => { css.rotate = `${Number(n)}deg`; }],
 ];
 
 /** Bare-word tokens (case-insensitive). */
@@ -184,12 +186,21 @@ export function pickRow(rows, v) {
   return rows.find((r) => String(r.outputFileName || '').toLowerCase() === v.toLowerCase()) || null;
 }
 
-/** Asks Dynamic Media OpenAPI delivery for a 2x rendition when the URL carries no width. */
+/**
+ * Asks for a 2x rendition: Dynamic Media OpenAPI delivery when the URL carries no width, and
+ * EDS media (media_<hash>.png, which EDS writes at width=750 whatever the ad size) as WebP.
+ */
 export function deliveryUrl(url, box) {
   try {
     const u = new URL(url);
+    const width = String(Math.ceil(box.w * 2));
     if (u.pathname.includes('/adobe/assets/') && !u.searchParams.has('width')) {
-      u.searchParams.set('width', String(Math.ceil(box.w * 2)));
+      u.searchParams.set('width', width);
+    } else if (/\/media_[0-9a-f]+\.(png|jpe?g|gif|webp)$/i.test(u.pathname)) {
+      u.search = '';
+      u.searchParams.set('width', width);
+      u.searchParams.set('format', 'webply');
+      u.searchParams.set('optimize', 'medium');
     }
     return u.href;
   } catch {
@@ -229,6 +240,7 @@ export function buildStage(doc, {
     el.dataset.motion = `${layer.motion.preset}@${layer.motion.delay}/${layer.motion.duration}`;
     place(el, layer.box);
     const { css, flags } = layer.style;
+    if (css.rotate) el.style.rotate = css.rotate;
     const bound = /\{[\w.-]+\}/.test(layer.source);
     const value = bind(layer.source, row);
     if (bound && !value) missing.push(layer.name);
@@ -250,7 +262,9 @@ export function buildStage(doc, {
       }
     } else {
       el.textContent = value;
-      const { objectPosition, objectFit, ...textCss } = css;
+      const {
+        objectPosition, objectFit, rotate, ...textCss
+      } = css;
       Object.assign(el.style, textCss);
       if (flags.button) el.classList.add('ad-button');
       if (flags.valign) el.dataset.valign = flags.valign === 'center' ? 'middle' : flags.valign;

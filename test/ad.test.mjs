@@ -55,6 +55,12 @@ test('keyframes span the timeline and end on the designed state', () => {
   assert.match(css, /100%\{opacity:1;transform:none\}\}$/);
 });
 
+test('parseStyle rotate', () => {
+  assert.equal(parseStyle('focus:50,30 rotate:-4.3').css.rotate, '-4.3deg');
+  assert.equal(parseStyle('rotate:5.6deg').css.rotate, '5.6deg');
+  assert.equal(parseStyle('rotate:abc').css.rotate, undefined);
+});
+
 test('parseStyle', () => {
   const { css, flags } = parseStyle('"Proxima Nova" Bold 22/24 #fff center caps track:20 valign:middle button');
   assert.deepEqual(css, {
@@ -85,12 +91,13 @@ test('parsers and binding', () => {
   assert.equal(pickRow(rows, 'one').outputFileName, 'One');
   assert.equal(pickRow(rows, 'nope'), null);
   assert.equal(deliveryUrl('https://d.example/adobe/assets/urn:x/as/a.jpg', { w: 150 }), 'https://d.example/adobe/assets/urn:x/as/a.jpg?width=300');
+  assert.equal(deliveryUrl('https://m--a--b.aem.page/ads/x/media_1a2b.png?width=750&format=png&optimize=medium', { w: 1080 }), 'https://m--a--b.aem.page/ads/x/media_1a2b.png?width=2160&format=webply&optimize=medium');
 });
 
 const BLOCK = `<div class="ad">
   <div><div>size</div><div>300x250</div><div>duration 6</div><div>loops 2</div><div>rows /drafts/variations.json</div></div>
   <div><div>static-0</div><div>image</div><div><img src="/drafts/bg.svg"></div><div>0,0,300,250</div><div>none</div></div>
-  <div><div>hero</div><div>image</div><div>{hero}</div><div>0,0,300,250</div><div>kenburns · focus:50,30</div></div>
+  <div><div>hero</div><div>image</div><div>{hero}</div><div>0,0,300,250</div><div>kenburns · focus:50,30 rotate:-4.3</div></div>
   <div><div>headline</div><div>text</div><div>{headline}</div><div>16,150,268,48</div><div>fadeUp@0.4 · Sans Bold 22/24 #fff</div></div>
   <div><div>cta</div><div>text</div><div>{cta}</div><div>16,206,120,28</div><div></div><div>bg:#e00 #fff 13 button radius:4</div></div>
   <div><div>junk</div><div>video</div><div>x</div><div>0,0,1,1</div></div>
@@ -137,6 +144,10 @@ test('preview render: layout, motion, text-safe binding, controls', async () => 
   assert.equal(layers.length, 4);
   const headline = stage.querySelector('[data-label="headline"]');
   assert.equal(headline.textContent, 'Spring <b>sale</b>');
+  // a tilted frame rotates the layer; kenburns still runs on the picture inside it
+  const hero = stage.querySelector('[data-label="hero"]');
+  assert.equal(hero.style.rotate, '-4.3deg');
+  assert.match(hero.querySelector('img').style.animation, /-k1 /);
   assert.equal(headline.querySelector('b'), null);
   assert.equal(headline.style.top, '150px');
   assert.match(headline.style.animation, /ad1-k2 6s linear 0s 2 both/);
