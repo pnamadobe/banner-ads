@@ -111,7 +111,11 @@ export function assembleIndex({
 const EXT = {
   png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml', avif: 'image/avif',
 };
-export const mimeOf = (name) => EXT[String(name).split('.').pop().toLowerCase()] || 'application/octet-stream';
+// zip entries beyond images: index.html must be served as HTML or the browser downloads it
+const MIME = {
+  ...EXT, html: 'text/html; charset=utf-8', htm: 'text/html; charset=utf-8', css: 'text/css', js: 'text/javascript', json: 'application/json',
+};
+export const mimeOf = (name) => MIME[String(name).split('.').pop().toLowerCase()] || 'application/octet-stream';
 
 const slug = (s) => String(s || 'img').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'img';
 

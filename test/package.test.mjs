@@ -160,6 +160,8 @@ test('planAssets names one file per unique src; atStep and rewriteAssets', () =>
   const html = `<img src="${escAttr(d)}"><img src="https://x.example/static-0.png">`;
   assert.equal(rewriteAssets(html, plan), '<img src="assets/hero-shot.jpg"><img src="assets/static-0.png">');
   assert.equal(mimeOf('a/b.JPG'), 'image/jpeg');
+  assert.match(mimeOf('index.html'), /^text\/html/);
+  assert.equal(mimeOf('ad.css'), 'text/css');
 });
 
 test('fitBudget stops at the first step under budget, else flags over', async () => {
