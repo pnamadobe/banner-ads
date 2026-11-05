@@ -70,6 +70,11 @@ const STYLE_RULES = [
     if (lead) css.lineHeight = `${lead}px`;
   }],
   [/^track:(-?\d*\.?\d+)$/i, ([, n], css) => { css.letterSpacing = `${Number(n) / 1000}em`; }],
+  // outline painted under the fill, so it never thins the letters
+  [/^stroke:(\d*\.?\d+),(#[0-9a-f]{3,8})$/i, ([, w, hex], css) => {
+    css.webkitTextStroke = `${w}px ${hex}`;
+    css.paintOrder = 'stroke fill';
+  }],
   [/^radius:(\d*\.?\d+)$/i, ([, n], css) => { css.borderRadius = `${n}px`; }],
   [/^valign:(top|middle|center|bottom)$/i, ([, v], css, flags) => { flags.valign = v.toLowerCase(); }],
   [/^focus:(\d*\.?\d+),(\d*\.?\d+)$/i, ([, x, y], css) => { css.objectPosition = `${x}% ${y}%`; }],
@@ -165,6 +170,12 @@ export function readBlock(block) {
 }
 
 /** Replaces `{column}` with the row's value. Unknown columns become empty. */
+/** CSV line breaks: a typed `\n` or a real CR/LF becomes a newline; lines are trimmed. */
+export function lineBreaks(value) {
+  const lines = String(value || '').replace(/\\n/g, '\n').replace(/\r\n?/g, '\n').split('\n');
+  return lines.map((l) => l.trim()).join('\n');
+}
+
 export function bind(value, row) {
   return (value || '').replace(/\{([\w.-]+)\}/g, (_, k) => {
     const hit = Object.keys(row || {}).find((c) => c.toLowerCase() === k.toLowerCase());
@@ -263,7 +274,8 @@ export function buildStage(doc, {
     } else {
       const inner = doc.createElement('span');
       inner.className = 'ad-text-in';
-      inner.textContent = value;
+      const text = lineBreaks(value);
+      inner.textContent = text;
       el.append(inner);
       const {
         objectPosition, objectFit, rotate, ...textCss
@@ -273,7 +285,8 @@ export function buildStage(doc, {
       if (flags.valign) el.dataset.valign = flags.valign === 'center' ? 'middle' : flags.valign;
       // a frame too short for two lines was designed as one line: keep it on one
       const lh = parseFloat(textCss.lineHeight || textCss.fontSize);
-      if (lh && layer.box.h < 2 * lh) el.classList.add('ad-oneline');
+      // (copy with its own line break keeps it)
+      if (lh && layer.box.h < 2 * lh && !text.includes('\n')) el.classList.add('ad-oneline');
     }
 
     const frames = keyframesFor(layer.motion, { ...ctx, box: layer.box });

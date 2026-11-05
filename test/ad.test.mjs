@@ -6,7 +6,7 @@ import {
   parseMotion, timing, assignMotion, keyframesFor, keyframesCss,
 } from '../blocks/ad/ad-motion.js';
 import {
-  parseStyle, parseBox, parseSize, safeUrl, bind, pickRow, sheetRows, deliveryUrl, readBlock, fitText,
+  parseStyle, parseBox, parseSize, safeUrl, bind, lineBreaks, pickRow, sheetRows, deliveryUrl, readBlock, fitText,
 } from '../blocks/ad/ad.js';
 
 const STAGE = { width: 300, height: 250 };
@@ -210,4 +210,18 @@ test('fitText shrinks overflowing copy to its frame, leaves fitting copy alone',
   assert.equal(big.dataset.fit, String(parseFloat(big.style.fontSize) / 40));
   assert.equal(ok.style.fontSize, '40px');
   assert.equal(ok.dataset.fit, undefined);
+});
+
+test('lineBreaks', () => {
+  assert.equal(lineBreaks('Fly to\\nDenver'), 'Fly to\nDenver');
+  assert.equal(lineBreaks('Fly to \\n Denver\r\nnow'), 'Fly to\nDenver\nnow');
+  assert.equal(lineBreaks(''), '');
+});
+
+test('parseStyle stroke', () => {
+  const { css } = parseStyle('40 #3a1f6b stroke:2.3,#e0d8ff');
+  assert.equal(css.webkitTextStroke, '2.3px #e0d8ff');
+  assert.equal(css.paintOrder, 'stroke fill');
+  assert.equal(css.color, '#3a1f6b');
+  assert.equal(parseStyle('stroke:2;red').css.webkitTextStroke, undefined);
 });
