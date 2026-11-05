@@ -18,6 +18,11 @@ import {
 
 const OFFLINE = 'https://ad.invalid/';
 const PAGE_TIMEOUT = 60000;
+// The GIF preview is a review aid, not the ad: its longer side is at most this many px. Full-size GIFs of
+// 2880 px ads were slow (about 60 frames each) and could pass the 50 MB writeback file limit.
+const PREVIEW_MAX = 800;
+// Ads rendered at the same time (each in its own pages). Writeback calls stay one at a time.
+const CONCURRENCY = Math.max(1, Number(process.env.PACKAGE_CONCURRENCY) || 3);
 const log = (...a) => console.log(...a); // eslint-disable-line no-console
 
 // ---- writeback (the extension action; it holds the AEM credentials) ----
@@ -137,12 +142,14 @@ async function openOffline(browser, files, width, height) {
   await page.goto(`${OFFLINE}index.html`, { waitUntil: 'load', timeout: PAGE_TIMEOUT });
   await page.waitForFunction(() => [...document.images].every((i) => i.complete), null, { timeout: PAGE_TIMEOUT });
   await page.evaluate(() => document.fonts.ready.then(() => true));
-  const shot = async (t) => {
+  // png for the fidelity frame; jpeg is faster to encode and fine for GIF/storyboard frames
+  const shot = async (t, type = 'png') => {
     await page.evaluate((ms) => {
       document.getAnimations().forEach((a) => { a.pause(); a.currentTime = ms; });
     }, t * 1000);
     return page.screenshot({
-      type: 'png',
+      type,
+      ...(type === 'jpeg' ? { quality: 92 } : {}),
       clip: {
         x: 0, y: 0, width, height,
       },
@@ -156,7 +163,7 @@ async function storyboard(tool, pngs, times, width, height) {
   const cellW = Math.min(width, 320);
   const cellH = Math.round((height * cellW) / width);
   const cols = 3;
-  const cells = pngs.map((p, i) => `<figure><img src="data:image/png;base64,${p.toString('base64')}" width="${cellW}" height="${cellH}"><figcaption>${times[i].toFixed(1)} s</figcaption></figure>`).join('');
+  const cells = pngs.map((p, i) => `<figure><img src="data:image/jpeg;base64,${p.toString('base64')}" width="${cellW}" height="${cellH}"><figcaption>${times[i].toFixed(1)} s</figcaption></figure>`).join('');
   await tool.setViewportSize({ width: cols * (cellW + 24) + 24, height: 2 * (cellH + 48) + 24 });
   await tool.setContent(`<!doctype html><style>
     body{margin:0;background:#f2f2f2;font:13px/1.2 system-ui,sans-serif;color:#333}
@@ -203,14 +210,17 @@ async function packageAd(browser, tool, wb, origin, ad) {
   try {
     const duration = info.duration || info.total || 1;
     const { fps, times } = gifTimes(duration);
+    const k = Math.min(1, PREVIEW_MAX / Math.max(width, height));
+    const gw = Math.max(1, Math.round(width * k));
+    const gh = Math.max(1, Math.round(height * k));
     const frames = [];
     for (const t of times) {
-      frames.push(await decode(tool, await view.shot(t), width, height));
+      frames.push(await decode(tool, await view.shot(t, 'jpeg'), gw, gh));
     }
-    gif = encodeGif(frames, width, height, Math.round(100 / fps));
+    gif = encodeGif(frames, gw, gh, Math.round(100 / fps));
     const sbTimes = storyboardTimes(duration);
     const pngs = [];
-    for (const t of sbTimes) pngs.push(await view.shot(t));
+    for (const t of sbTimes) pngs.push(await view.shot(t, 'jpeg'));
     board = await storyboard(tool, pngs, sbTimes, width, height);
     endFrame = await decode(tool, await view.shot(info.total || duration), width, height);
   } finally {
@@ -264,15 +274,17 @@ async function main() {
   const wb = writeback(payload.writeback);
   const { chromium } = await import('playwright');
   const browser = await chromium.launch();
-  const tool = await browser.newPage();
-  await tool.setContent('<!doctype html><title>tool</title>');
   const summary = [];
   let failed = 0;
-  try {
-    for (let i = 0; i < payload.ads.length; i += 1) {
-      const ad = payload.ads[i];
-      try {
-        const out = await packageAd(browser, tool, wb, payload.origin, ad);
+  // one writeback call chain: the action updates a single state record per run
+  let chain = Promise.resolve();
+  const serial = (fn) => { const p = chain.then(fn); chain = p.catch(() => {}); return p; };
+
+  const one = async (tool, i) => {
+    const ad = payload.ads[i];
+    try {
+      const out = await packageAd(browser, tool, wb, payload.origin, ad);
+      await serial(async () => {
         const init = await wb('initiate', { ad: i, files: out.outputs.map((o) => ({ name: o.name, mime: o.mime, size: o.data.length })) });
         for (const o of out.outputs) {
           const f = (init.files || []).find((x) => x.name === o.name);
@@ -287,23 +299,56 @@ async function main() {
           })),
           report: out.report,
         });
-        const codes = [...new Set(out.report.issues.map((x) => x.code))].join(',') || '-';
-        summary.push(`| ${i + 1} | ${out.width}x${out.height} | ${Math.round(out.report.bytes / 1024)} KB | ${out.report.fidelity.verdict} | ${codes} |`);
-        log(`ad ${i + 1}: ${out.width}x${out.height} ${Math.round(out.report.bytes / 1024)} KB fidelity=${out.report.fidelity.verdict} issues=${codes}`);
-      } catch (e) {
-        failed += 1;
-        const code = e.code || 'HTML5_PACKAGE_ERROR';
-        summary.push(`| ${i + 1} | - | - | - | ${code} |`);
-        log(`ad ${i + 1}: failed ${code}${e.status ? ` (${e.status})` : ''}`);
-        await wb('complete', { ad: i, files: [], report: { error: { code, message: e.message } } }).catch(() => {});
-      }
+      });
+      const codes = [...new Set(out.report.issues.map((x) => x.code))].join(',') || '-';
+      summary[i] = `| ${i + 1} | ${out.width}x${out.height} | ${Math.round(out.report.bytes / 1024)} KB | ${out.report.fidelity.verdict} | ${codes} |`;
+      const gifKB = Math.round(out.outputs[1].data.length / 1024);
+      log(`ad ${i + 1}: ${out.width}x${out.height} ${Math.round(out.report.bytes / 1024)} KB gif=${gifKB} KB fidelity=${out.report.fidelity.verdict} issues=${codes}`);
+    } catch (e) {
+      failed += 1;
+      const code = e.code || 'HTML5_PACKAGE_ERROR';
+      summary[i] = `| ${i + 1} | - | - | - | ${code} |`;
+      log(`ad ${i + 1}: failed ${code}${e.status ? ` (${e.status})` : ''}`);
+      await serial(() => wb('complete', { ad: i, files: [], report: { error: { code, message: e.message } } })).catch(() => {});
     }
+  };
+
+  // if the job is cancelled (timeout), close the run in AEM instead of leaving it "running"
+  let finished = false;
+  const finish = async () => {
+    if (finished) return;
+    finished = true;
+    const unreported = payload.ads.length - summary.filter(Boolean).length;
+    await chain;
+    await wb('done', { failed: failed + unreported }).catch(() => log('writeback done failed'));
+  };
+  ['SIGTERM', 'SIGINT'].forEach((sig) => process.once(sig, () => {
+    log(`packager stopped (${sig})`);
+    finish().finally(() => process.exit(1));
+  }));
+
+  try {
+    let next = 0;
+    const worker = async () => {
+      const tool = await browser.newPage();
+      await tool.setContent('<!doctype html><title>tool</title>');
+      try {
+        while (next < payload.ads.length) {
+          const i = next;
+          next += 1;
+          await one(tool, i);
+        }
+      } finally {
+        await tool.close().catch(() => {});
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, payload.ads.length) }, worker));
   } finally {
     await browser.close();
-    await wb('done', { failed }).catch(() => log('writeback done failed'));
+    await finish();
   }
   if (process.env.GITHUB_STEP_SUMMARY) {
-    appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['## CM360 packages', '', '| ad | size | zip | fidelity | issues |', '|---|---|---|---|---|', ...summary, ''].join('\n'));
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['## CM360 packages', '', '| ad | size | zip | fidelity | issues |', '|---|---|---|---|---|', ...summary.filter(Boolean), ''].join('\n'));
   }
   if (failed === payload.ads.length && failed) process.exitCode = 1;
 }
