@@ -67,6 +67,15 @@ body.ad-export main > .section {
   overflow-wrap: break-word;
 }
 
+.ad .ad-text.ad-oneline {
+  white-space: nowrap;
+}
+
+.ad .ad-text-in {
+  display: block;
+  flex: none;
+}
+
 .ad .ad-text[data-valign="middle"] {
   justify-content: center;
 }

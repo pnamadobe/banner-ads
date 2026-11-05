@@ -6,7 +6,7 @@ import {
   parseMotion, timing, assignMotion, keyframesFor, keyframesCss,
 } from '../blocks/ad/ad-motion.js';
 import {
-  parseStyle, parseBox, parseSize, safeUrl, bind, pickRow, sheetRows, deliveryUrl, readBlock,
+  parseStyle, parseBox, parseSize, safeUrl, bind, pickRow, sheetRows, deliveryUrl, readBlock, fitText,
 } from '../blocks/ad/ad.js';
 
 const STAGE = { width: 300, height: 250 };
@@ -180,4 +180,34 @@ test('unknown row is an error, not a silent fallback', async () => {
   const { block } = await render('?export=cm360&v=Winter');
   assert.equal(block.dataset.adError, 'row-not-found');
   assert.equal(block.querySelector('.ad-stage'), null);
+});
+
+test('fitText shrinks overflowing copy to its frame, leaves fitting copy alone', () => {
+  const { window } = new JSDOM('<div class="stage"></div>');
+  const stage = window.document.querySelector('.stage');
+  const layer = (text, frameH) => {
+    const el = window.document.createElement('div');
+    el.className = 'ad-layer ad-text';
+    Object.assign(el.style, { fontSize: '40px', lineHeight: '40px' });
+    const inner = window.document.createElement('span');
+    inner.className = 'ad-text-in';
+    inner.textContent = text;
+    el.append(inner);
+    // fake layout: copy is 3 lines of lineHeight tall, 100px wide
+    Object.defineProperty(el, 'clientWidth', { value: 200 });
+    Object.defineProperty(el, 'clientHeight', { value: frameH });
+    Object.defineProperty(inner, 'offsetHeight', { get: () => 3 * parseFloat(el.style.lineHeight) });
+    Object.defineProperty(inner, 'offsetWidth', { value: 100 });
+    Object.defineProperty(inner, 'scrollWidth', { value: 100 });
+    stage.append(el);
+    return el;
+  };
+  const big = layer('too long', 90);
+  const ok = layer('fits', 130);
+  fitText(stage);
+  assert.ok(parseFloat(big.style.fontSize) <= 30, big.style.fontSize);
+  assert.ok(parseFloat(big.style.fontSize) >= 28);
+  assert.equal(big.dataset.fit, String(parseFloat(big.style.fontSize) / 40));
+  assert.equal(ok.style.fontSize, '40px');
+  assert.equal(ok.dataset.fit, undefined);
 });

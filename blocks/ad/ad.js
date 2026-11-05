@@ -261,13 +261,19 @@ export function buildStage(doc, {
         if (layer.motion.preset === 'kenburns') animated = img;
       }
     } else {
-      el.textContent = value;
+      const inner = doc.createElement('span');
+      inner.className = 'ad-text-in';
+      inner.textContent = value;
+      el.append(inner);
       const {
         objectPosition, objectFit, rotate, ...textCss
       } = css;
       Object.assign(el.style, textCss);
       if (flags.button) el.classList.add('ad-button');
       if (flags.valign) el.dataset.valign = flags.valign === 'center' ? 'middle' : flags.valign;
+      // a frame too short for two lines was designed as one line: keep it on one
+      const lh = parseFloat(textCss.lineHeight || textCss.fontSize);
+      if (lh && layer.box.h < 2 * lh) el.classList.add('ad-oneline');
     }
 
     const frames = keyframesFor(layer.motion, { ...ctx, box: layer.box });
@@ -279,6 +285,33 @@ export function buildStage(doc, {
     stage.append(el);
   });
   return { stage, css: rules.join('\n'), missing };
+}
+
+/**
+ * Shrinks each text layer whose copy overflows its designed frame (a longer
+ * variation, or a brand font the page could not load and a wider fallback)
+ * until it fits, down to `min` of the designed size. Records the scale in
+ * data-fit so reviewers can spot shrunk copy.
+ */
+export function fitText(stage, { min = 0.5, step = 0.04 } = {}) {
+  stage.querySelectorAll('.ad-text').forEach((el) => {
+    const inner = el.querySelector('.ad-text-in');
+    const size = parseFloat(el.style.fontSize);
+    if (!inner || !size || !el.clientWidth || !el.clientHeight) return;
+    const lh = parseFloat(el.style.lineHeight);
+    const cs = el.ownerDocument.defaultView.getComputedStyle(el);
+    const padX = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    const padY = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    const over = () => inner.offsetHeight > el.clientHeight - padY + 1
+      || Math.max(inner.scrollWidth, inner.offsetWidth) > el.clientWidth - padX + 1;
+    let scale = 1;
+    while (over() && scale - step >= min - 1e-9) {
+      scale -= step;
+      el.style.fontSize = px(+(size * scale).toFixed(2));
+      if (lh) el.style.lineHeight = px(+(lh * scale).toFixed(2));
+    }
+    if (scale < 1) el.dataset.fit = scale.toFixed(2);
+  });
 }
 
 function waitReady(stage, doc) {
@@ -430,6 +463,7 @@ export default async function decorate(block) {
   }
 
   const ready = waitReady(stage, document).then(() => {
+    fitText(stage);
     stage.classList.remove('is-loading');
     block.dataset.adReady = 'true';
   });
