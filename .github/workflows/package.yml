@@ -23,11 +23,22 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: 'npm'
       - run: npm ci
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-chromium-v1
       - name: Install Playwright (CI only)
         run: |
           npm install --no-save playwright@1
-          npx playwright install --with-deps chromium
+          if [ "${{ steps.pw-cache.outputs.cache-hit }}" = "true" ]; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
       - name: Write payload
         env:
           PAYLOAD: ${{ toJSON(github.event.client_payload) }}

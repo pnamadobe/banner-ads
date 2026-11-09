@@ -21,8 +21,8 @@ const PAGE_TIMEOUT = 60000;
 // The GIF preview is a review aid, not the ad: its longer side is at most this many px. Full-size GIFs of
 // 2880 px ads were slow (about 60 frames each) and could pass the 50 MB writeback file limit.
 const PREVIEW_MAX = 800;
-// Ads rendered at the same time (each in its own pages). Writeback calls stay one at a time.
-const CONCURRENCY = Math.max(1, Number(process.env.PACKAGE_CONCURRENCY) || 3);
+// Ads rendered at the same time (each in its own pages). Only the final state-mutating writeback call is serialized.
+const CONCURRENCY = Math.max(1, Number(process.env.PACKAGE_CONCURRENCY) || 4);
 const log = (...a) => console.log(...a); // eslint-disable-line no-console
 
 // ---- writeback (the extension action; it holds the AEM credentials) ----
@@ -68,22 +68,33 @@ async function fetchBuf(url) {
 }
 
 // ---- browser helpers ----
-/** RGBA pixels of an encoded image, resized to w x h, decoded in a plain page. */
-async function decode(tool, buf, w, h) {
-  const b64 = await tool.evaluate(async ({ data, width, height }) => {
-    const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
-    const bmp = await createImageBitmap(new Blob([bytes]), {
-      resizeWidth: width, resizeHeight: height, resizeQuality: 'high',
-    });
+/** RGBA pixels of encoded image buffers, resized to w x h, decoded in one batch in a plain page. */
+async function decodeMany(tool, bufs, w, h) {
+  const list = await tool.evaluate(async ({ items, width, height }) => {
     const canvas = new OffscreenCanvas(width, height);
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(bmp, 0, 0);
-    const px = ctx.getImageData(0, 0, width, height).data;
-    let s = '';
-    for (let i = 0; i < px.length; i += 0x8000) s += String.fromCharCode(...px.subarray(i, i + 0x8000));
-    return btoa(s);
-  }, { data: buf.toString('base64'), width: w, height: h });
-  return new Uint8Array(Buffer.from(b64, 'base64'));
+    const out = [];
+    for (let k = 0; k < items.length; k += 1) {
+      const bytes = Uint8Array.from(atob(items[k]), (c) => c.charCodeAt(0));
+      // eslint-disable-next-line no-await-in-loop
+      const bmp = await createImageBitmap(new Blob([bytes]), {
+        resizeWidth: width, resizeHeight: height, resizeQuality: 'high',
+      });
+      ctx.clearRect(0, 0, width, height);
+      ctx.drawImage(bmp, 0, 0);
+      bmp.close();
+      const px = ctx.getImageData(0, 0, width, height).data;
+      let s = '';
+      for (let i = 0; i < px.length; i += 0x8000) s += String.fromCharCode(...px.subarray(i, i + 0x8000));
+      out.push(btoa(s));
+    }
+    return out;
+  }, { items: bufs.map((b) => b.toString('base64')), width: w, height: h });
+  return list.map((b64) => new Uint8Array(Buffer.from(b64, 'base64')));
+}
+
+async function decode(tool, buf, w, h) {
+  return (await decodeMany(tool, [buf], w, h))[0];
 }
 
 /** Everything the export page knows about the ad. */
@@ -174,18 +185,31 @@ async function storyboard(tool, pngs, times, width, height) {
 }
 
 // ---- one ad ----
+const backupCache = new Map();
+function fetchBackup(wb, file) {
+  if (!file) return Promise.resolve(null);
+  if (!backupCache.has(file)) {
+    backupCache.set(file, wb('backup', { file }).catch(() => null));
+  }
+  return backupCache.get(file);
+}
+
 async function packageAd(browser, tool, wb, origin, ad) {
+  const backupPromise = fetchBackup(wb, ad.backup);
   const url = new URL(ad.path, origin);
   url.searchParams.set('v', ad.row);
   url.searchParams.set('export', 'cm360');
-  const info = await readExport(browser, url.href);
+  const [info, cssBuf] = await Promise.all([
+    readExport(browser, url.href),
+    fetchBuf(new URL('/blocks/ad/ad.css', origin).href).catch((e) => {
+      throw Object.assign(new Error(`ad.css -> ${e.message}`), { code: 'HTML5_EXPORT_ERROR' });
+    }),
+  ]);
   if (info.error) throw Object.assign(new Error(`export page error ${info.error}`), { code: 'HTML5_EXPORT_ERROR' });
   const { width, height } = info;
   if (!width || !height) throw Object.assign(new Error('export page has no ad.size'), { code: 'HTML5_EXPORT_ERROR' });
 
-  const cssRes = await fetch(new URL('/blocks/ad/ad.css', origin));
-  if (!cssRes.ok) throw Object.assign(new Error(`ad.css -> ${cssRes.status}`), { code: 'HTML5_EXPORT_ERROR' });
-  const css = await cssRes.text();
+  const css = cssBuf.toString('utf8');
   const assets = planAssets(info.images);
   const issues = [];
   if (info.missing) issues.push({ code: 'HTML5_LAYER_MISSING', message: `layers without a value: ${info.missing}` });
@@ -213,23 +237,39 @@ async function packageAd(browser, tool, wb, origin, ad) {
     const k = Math.min(1, PREVIEW_MAX / Math.max(width, height));
     const gw = Math.max(1, Math.round(width * k));
     const gh = Math.max(1, Math.round(height * k));
-    const frames = [];
+    const jpegShots = new Map();
+    const shotJpeg = async (t) => {
+      const key = Math.round(t * 1000);
+      if (!jpegShots.has(key)) jpegShots.set(key, await view.shot(t, 'jpeg'));
+      return jpegShots.get(key);
+    };
+    const gifJpegs = [];
     for (const t of times) {
-      frames.push(await decode(tool, await view.shot(t, 'jpeg'), gw, gh));
+      // eslint-disable-next-line no-await-in-loop
+      gifJpegs.push(await shotJpeg(t));
     }
-    gif = encodeGif(frames, gw, gh, Math.round(100 / fps));
     const sbTimes = storyboardTimes(duration);
     const pngs = [];
-    for (const t of sbTimes) pngs.push(await view.shot(t, 'jpeg'));
-    board = await storyboard(tool, pngs, sbTimes, width, height);
-    endFrame = await decode(tool, await view.shot(info.total || duration), width, height);
+    for (const t of sbTimes) {
+      // eslint-disable-next-line no-await-in-loop
+      pngs.push(await shotJpeg(t));
+    }
+    const endPng = await view.shot(info.total || duration);
+    const [frames, sbBoard, decodedEnd] = await Promise.all([
+      decodeMany(tool, gifJpegs, gw, gh),
+      storyboard(tool, pngs, sbTimes, width, height),
+      decode(tool, endPng, width, height),
+    ]);
+    gif = encodeGif(frames, gw, gh, Math.round(100 / fps));
+    board = sbBoard;
+    endFrame = decodedEnd;
   } finally {
     await view.close();
   }
 
   // fidelity against the InDesign backup (a failure flags this ad, never the job)
   let fidelity = { verdict: 'unknown', score: null };
-  const backup = ad.backup ? await wb('backup', { file: ad.backup }).catch(() => null) : null;
+  const backup = await backupPromise;
   if (backup && backup.data) {
     const score = rmse(endFrame, await decode(tool, Buffer.from(backup.data, 'base64'), width, height));
     fidelity = { verdict: fidelityVerdict(score), score: Math.round(score * 10000) / 10000 };
@@ -272,11 +312,12 @@ async function main() {
   const payload = JSON.parse(readFileSync(file, 'utf8'));
   if (payload.writeback?.token) log(`::add-mask::${payload.writeback.token}`);
   const wb = writeback(payload.writeback);
+  // eslint-disable-next-line import/no-extraneous-dependencies
   const { chromium } = await import('playwright');
   const browser = await chromium.launch();
   const summary = [];
   let failed = 0;
-  // one writeback call chain: the action updates a single state record per run
+  // one writeback call chain for state-mutating calls (complete/done); initiate and binary PUTs run concurrently
   let chain = Promise.resolve();
   const serial = (fn) => { const p = chain.then(fn); chain = p.catch(() => {}); return p; };
 
@@ -284,22 +325,20 @@ async function main() {
     const ad = payload.ads[i];
     try {
       const out = await packageAd(browser, tool, wb, payload.origin, ad);
-      await serial(async () => {
-        const init = await wb('initiate', { ad: i, files: out.outputs.map((o) => ({ name: o.name, mime: o.mime, size: o.data.length })) });
-        for (const o of out.outputs) {
-          const f = (init.files || []).find((x) => x.name === o.name);
-          if (!f || !f.uploadURIs?.length) throw new Error('writeback initiate: no upload URI');
-          await uploadParts(f.uploadURIs, o.data);
-          o.uploadToken = f.uploadToken;
-        }
-        await wb('complete', {
-          ad: i,
-          files: out.outputs.map((o) => ({
-            name: o.name, mime: o.mime, size: o.data.length, uploadToken: o.uploadToken,
-          })),
-          report: out.report,
-        });
-      });
+      const init = await wb('initiate', { ad: i, files: out.outputs.map((o) => ({ name: o.name, mime: o.mime, size: o.data.length })) });
+      await Promise.all(out.outputs.map(async (o) => {
+        const f = (init.files || []).find((x) => x.name === o.name);
+        if (!f || !f.uploadURIs?.length) throw new Error('writeback initiate: no upload URI');
+        await uploadParts(f.uploadURIs, o.data);
+        o.uploadToken = f.uploadToken;
+      }));
+      await serial(() => wb('complete', {
+        ad: i,
+        files: out.outputs.map((o) => ({
+          name: o.name, mime: o.mime, size: o.data.length, uploadToken: o.uploadToken,
+        })),
+        report: out.report,
+      }));
       const codes = [...new Set(out.report.issues.map((x) => x.code))].join(',') || '-';
       summary[i] = `| ${i + 1} | ${out.width}x${out.height} | ${Math.round(out.report.bytes / 1024)} KB | ${out.report.fidelity.verdict} | ${codes} |`;
       const gifKB = Math.round(out.outputs[1].data.length / 1024);

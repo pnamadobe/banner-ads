@@ -24,6 +24,18 @@ export function crc32(buf) {
 
 const DOS_DATE = (1 << 5) | 1; // 1980-01-01
 const DOS_TIME = 0;
+const ZIP_CACHE = new WeakMap();
+
+function compressEntry(data) {
+  const isBuf = Buffer.isBuffer(data);
+  if (isBuf && ZIP_CACHE.has(data)) return ZIP_CACHE.get(data);
+  const raw = isBuf ? data : Buffer.from(String(data));
+  const deflated = deflateRawSync(raw, { level: 9 });
+  const useDeflate = deflated.length < raw.length;
+  const entry = { raw, body: useDeflate ? deflated : raw, useDeflate, crc: crc32(raw) };
+  if (isBuf) ZIP_CACHE.set(data, entry);
+  return entry;
+}
 
 /** files: [{ name, data: Buffer|string }] -> Buffer */
 export function zip(files) {
@@ -32,12 +44,10 @@ export function zip(files) {
   let offset = 0;
   files.forEach(({ name, data }) => {
     if (!/^[\w.-]+(\/[\w.-]+)*$/.test(name) || name.split('/').includes('..')) throw new Error(`zip: bad name ${name}`);
-    const raw = Buffer.isBuffer(data) ? data : Buffer.from(String(data));
-    const deflated = deflateRawSync(raw, { level: 9 });
-    const useDeflate = deflated.length < raw.length;
-    const body = useDeflate ? deflated : raw;
+    const {
+      raw, body, useDeflate, crc,
+    } = compressEntry(data);
     const fname = Buffer.from(name);
-    const crc = crc32(raw);
     const head = Buffer.alloc(30);
     head.writeUInt32LE(0x04034b50, 0);
     head.writeUInt16LE(20, 4);
